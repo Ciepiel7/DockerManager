@@ -286,44 +286,21 @@ public class MainForm : Form
                 Tail = "20"
             };
 
+            // tty=true returns a plain Stream (avoids MultiplexedStream issues)
             using var logStream = await _client.Containers.GetContainerLogsAsync(
-                containerId, false, logParams);
+                containerId, true, logParams);
 
             using var reader = new StreamReader(logStream);
             var rawLog = await reader.ReadToEndAsync();
 
-            // Docker multiplexed stream — strip 8-byte header per frame
-            var cleaned = CleanDockerLog(rawLog);
-            _txtLogs.Text = string.IsNullOrWhiteSpace(cleaned)
+            _txtLogs.Text = string.IsNullOrWhiteSpace(rawLog)
                 ? "(brak logów)"
-                : cleaned;
+                : rawLog.TrimEnd();
         }
         catch
         {
             _txtLogs.Text = "(nie można pobrać logów — kontener może być zatrzymany)";
         }
-    }
-
-    private static string CleanDockerLog(string raw)
-    {
-        var sb = new StringBuilder();
-        using var reader = new StringReader(raw);
-        string? line;
-        while ((line = reader.ReadLine()) != null)
-        {
-            // Strip Docker stream header bytes (first 8 bytes per frame if present)
-            if (line.Length > 8)
-            {
-                var clean = line.Substring(8).TrimStart('\0', ' ');
-                if (!string.IsNullOrWhiteSpace(clean))
-                    sb.AppendLine(clean);
-            }
-            else if (!string.IsNullOrWhiteSpace(line))
-            {
-                sb.AppendLine(line);
-            }
-        }
-        return sb.ToString().TrimEnd();
     }
 
     // =============================================
@@ -333,11 +310,21 @@ public class MainForm : Form
     {
         try
         {
-            // Use GetContainerStatsAsync with stream=false for a single snapshot
-            var statsResponse = await _client.Containers.GetContainerStatsAsync(
+            ContainerStatsResponse? statsResponse = null;
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+            var progress = new Progress<ContainerStatsResponse>(stats =>
+            {
+                statsResponse = stats;
+            });
+
+            // Stream=false gives a single snapshot then completes
+            await _client.Containers.GetContainerStatsAsync(
                 containerId,
                 new ContainerStatsParameters { Stream = false },
-                CancellationToken.None);
+                progress,
+                cts.Token);
 
             if (statsResponse != null)
             {
