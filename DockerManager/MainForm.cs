@@ -248,7 +248,8 @@ public class MainForm : Form
                     await _client.Containers.StopContainerAsync(id, new ContainerStopParameters());
                     break;
                 case "restart":
-                    await _client.Containers.RestartContainerAsync(id, new ConatinerRestartParameters());
+                    await _client.Containers.StopContainerAsync(id, new ContainerStopParameters());
+                    await _client.Containers.StartContainerAsync(id, new ContainerStartParameters());
                     break;
                 case "delete":
                     var confirm = MessageBox.Show("Czy na pewno chcesz usunąć ten kontener?",
@@ -286,12 +287,21 @@ public class MainForm : Form
                 Tail = "20"
             };
 
-            // tty=true returns a plain Stream (avoids MultiplexedStream issues)
-            using var logStream = await _client.Containers.GetContainerLogsAsync(
-                containerId, true, logParams);
+            var muxStream = await _client.Containers.GetContainerLogsAsync(
+                containerId, false, logParams);
 
-            using var reader = new StreamReader(logStream);
-            var rawLog = await reader.ReadToEndAsync();
+            // Read from MultiplexedStream
+            var buffer = new byte[65536];
+            using var ms = new MemoryStream();
+            MultiplexedStream.ReadResult readResult;
+            do
+            {
+                readResult = await muxStream.ReadOutputAsync(buffer, 0, buffer.Length, CancellationToken.None);
+                if (readResult.Count > 0)
+                    ms.Write(buffer, 0, readResult.Count);
+            } while (!readResult.EOF);
+
+            var rawLog = Encoding.UTF8.GetString(ms.ToArray());
 
             _txtLogs.Text = string.IsNullOrWhiteSpace(rawLog)
                 ? "(brak logów)"
